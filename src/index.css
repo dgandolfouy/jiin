@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  
+  --color-jinn-violet: #8B5CF6;
+  --color-jinn-neon: #D9F99D;
+  --color-jinn-coral: #FB7185;
+  --color-jinn-dark: #0F172A;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-jinn-dark font-sans;
+  }
+}
+
+.glass-card {
+  @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl;
+}
+
+.bubbly-button {
+  @apply transition-all duration-300 active:scale-95 hover:shadow-lg hover:-translate-y-0.5;
+}
