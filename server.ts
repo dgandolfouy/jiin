@@ -9,7 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
-  console.log("Starting Jinn server...");
+  console.log("Starting Djinn server...");
   const app = express();
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
