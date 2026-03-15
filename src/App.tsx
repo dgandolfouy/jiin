@@ -903,7 +903,7 @@ const LoginView = ({ onLogin, onShowPrivacy, onShowTerms }: { onLogin: (provider
         transition={{ duration: 1 }}
         className="relative z-10 w-full max-w-md text-center"
       >
-        <Logo className="text-white mb-16 mx-auto" size={240} animated={true} />
+        <Logo className="text-white mb-16 mx-auto" size="clamp(150px, 40vw, 240px)" animated={true} />
         
         <motion.div
           initial={{ opacity: 0, y: 20 }}
