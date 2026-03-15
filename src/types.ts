@@ -31,6 +31,7 @@ export interface Gift {
   contributions: number;
   targetAmount: number;
   reservedBy?: string;
+  reservedBySecret?: boolean;
   comments: Comment[];
   contributionHistory?: Contribution[];
   isSurprise?: boolean;
@@ -47,6 +48,7 @@ export interface Gift {
 export interface Contribution {
   id: string;
   userName: string;
+  isSecret?: boolean;
   amount: number;
   timestamp: string;
   voiceMessageUrl?: string; // Base64 or URL

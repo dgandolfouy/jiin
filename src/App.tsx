@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { io } from "socket.io-client";
-import { HashRouter, Routes, Route, useNavigate, useParams, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, useNavigate, useParams, Navigate, useLocation, useMatch } from 'react-router-dom';
 import { 
   Gift as GiftIcon, 
   MessageCircle, 
@@ -39,6 +39,8 @@ import {
 import confetti from 'canvas-confetti';
 import { Gift, Comment, Wishlist, GiftStatus, PaymentInfo, Contribution, PaymentMethod } from './types';
 import { formatCurrency, currencies, getLocalCurrency } from './utils/formatters';
+import { auth, googleProvider, appleProvider } from './firebase';
+import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 
 // --- Mock Data ---
 const CURRENT_USER_ID = 'u1';
@@ -58,11 +60,11 @@ const MOCK_WISHLISTS: Wishlist[] = [
     coverImage: 'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?q=80&w=1000&auto=format&fit=crop',
     participantCount: 12,
     isFavorite: true,
-    magicCode: 'JINN-2026',
+    magicCode: 'DJINN-2026',
     paymentInfo: {
       methods: [
         { id: 'pm1', type: 'paypal', label: 'PayPal', details: 'https://paypal.me/danielgandolfo' },
-        { id: 'pm2', type: 'bank', label: 'Santander Uruguay', details: 'CBU: 0000000000000000000000\nAlias: daniel.jinn.uy' }
+        { id: 'pm2', type: 'bank', label: 'Santander Uruguay', details: 'CBU: 0000000000000000000000\nAlias: daniel.djinn.uy' }
       ]
     },
     gifts: [
@@ -166,7 +168,34 @@ const MOCK_WISHLISTS: Wishlist[] = [
     participantCount: 85,
     isFavorite: true,
     magicCode: 'BODA-AL',
-    gifts: []
+    gifts: [
+      {
+        id: 'w3g1',
+        title: 'Vajilla de Porcelana',
+        description: 'Juego completo para 12 personas.',
+        price: 300,
+        imageUrl: 'https://images.unsplash.com/photo-1610701596007-11502861dcfa?q=80&w=800&auto=format&fit=crop',
+        status: 'available',
+        category: 'Hogar',
+        isGroupGift: true,
+        contributions: 150,
+        targetAmount: 300,
+        comments: []
+      },
+      {
+        id: 'w3g2',
+        title: 'Smart TV 55"',
+        description: 'Para nuestras noches de cine.',
+        price: 500,
+        imageUrl: 'https://images.unsplash.com/photo-1593359677879-a4bb92f829d1?q=80&w=800&auto=format&fit=crop',
+        status: 'available',
+        category: 'Tecnología',
+        isGroupGift: true,
+        contributions: 0,
+        targetAmount: 500,
+        comments: []
+      }
+    ]
   },
   {
     id: 'w4',
@@ -179,7 +208,21 @@ const MOCK_WISHLISTS: Wishlist[] = [
     participantCount: 42,
     isFavorite: false,
     magicCode: 'SOFI-30',
-    gifts: []
+    gifts: [
+      {
+        id: 'w4g1',
+        title: 'Cámara Instax Mini',
+        description: 'Para capturar los momentos de la fiesta.',
+        price: 90,
+        imageUrl: 'https://images.unsplash.com/photo-1526170315870-ef68971ef022?q=80&w=800&auto=format&fit=crop',
+        status: 'available',
+        category: 'Tecnología',
+        isGroupGift: false,
+        contributions: 0,
+        targetAmount: 90,
+        comments: []
+      }
+    ]
   },
   {
     id: 'w5',
@@ -192,7 +235,21 @@ const MOCK_WISHLISTS: Wishlist[] = [
     participantCount: 8,
     isFavorite: false,
     magicCode: 'JAPON-27',
-    gifts: []
+    gifts: [
+      {
+        id: 'w5g1',
+        title: 'Fondo para el Vuelo',
+        description: 'Ayúdame a llegar al país del sol naciente.',
+        price: 1200,
+        imageUrl: 'https://images.unsplash.com/photo-1436491865332-7a61a109c0f3?q=80&w=800&auto=format&fit=crop',
+        status: 'available',
+        category: 'Viajes',
+        isGroupGift: true,
+        contributions: 450,
+        targetAmount: 1200,
+        comments: []
+      }
+    ]
   }
 ];
 
@@ -205,14 +262,23 @@ interface GiftCardProps {
   key?: React.Key;
 }
 
-const GiftCard = ({ gift, onClick, onContribute, ninjaMode, currency, isOwner }: GiftCardProps & { ninjaMode: boolean, currency: string, isOwner: boolean }) => {
+const GiftCard = ({ gift, onClick, onContribute, secretMode, currency, isOwner }: GiftCardProps & { secretMode: boolean, currency: string, isOwner: boolean }) => {
   const { t } = useTranslation();
   const progress = (gift.contributions / gift.targetAmount) * 100;
   const isReserved = gift.status === 'reserved';
   const isCompleted = gift.status === 'completed';
-  const showReserved = isReserved && (!isOwner || !ninjaMode);
+  const showReserved = isReserved && (!isOwner || !secretMode);
   const isSurprise = gift.isSurprise && !gift.revealed;
   const hideDetails = isSurprise && isOwner;
+
+  // Determine display name for reservation
+  let displayReservedBy = gift.reservedBy;
+  if (gift.reservedBySecret && !isOwner) {
+    displayReservedBy = t('secret_genie');
+  }
+  if (isOwner && secretMode && isReserved) {
+    displayReservedBy = null; // Hide from owner if secretMode is ON
+  }
 
   return (
     <motion.div 
@@ -261,7 +327,7 @@ const GiftCard = ({ gift, onClick, onContribute, ninjaMode, currency, isOwner }:
               className="bg-jinn-neon text-jinn-dark px-4 py-2 rounded-full font-bold flex items-center gap-2 shadow-lg"
             >
               <CheckCircle2 size={18} />
-              {t('reserved')}
+              {t('reserved')} {displayReservedBy ? `por ${displayReservedBy}` : ''}
             </motion.div>
           </div>
         )}
@@ -277,7 +343,7 @@ const GiftCard = ({ gift, onClick, onContribute, ninjaMode, currency, isOwner }:
             </motion.div>
           </div>
         )}
-        {isReserved && isOwner && ninjaMode && (
+        {isReserved && isOwner && secretMode && (
           <div className="absolute top-4 right-4">
             <div className="w-8 h-8 rounded-full bg-jinn-dark/20 backdrop-blur-md flex items-center justify-center text-white">
               <Sparkles size={16} />
@@ -395,16 +461,23 @@ const Confetti = () => {
   );
 };
 
-const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceived, wishlistId, onContribute }: { gift: Gift, onClose: () => void, ninjaMode: boolean, currency: string, isOwner: boolean, onMarkAsReceived: (id: string) => void, wishlistId: string, onContribute: () => void }) => {
+const GiftModal = ({ gift, onClose, secretMode, currency, isOwner, onMarkAsReceived, wishlistId, onContribute }: { gift: Gift, onClose: () => void, secretMode: boolean, currency: string, isOwner: boolean, onMarkAsReceived: (id: string) => void, wishlistId: string, onContribute: () => void }) => {
   const { t } = useTranslation();
   const [comment, setComment] = useState('');
+  const [isSecretReservation, setIsSecretReservation] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const progress = (gift.contributions / gift.targetAmount) * 100;
   const isReserved = gift.status === 'reserved';
   const isCompleted = gift.status === 'completed';
-  const hideReservedInfo = isReserved && isOwner && ninjaMode;
+  const hideReservedInfo = isReserved && isOwner && secretMode;
   const isSurprise = gift.isSurprise && !gift.revealed;
   const hideDetails = isSurprise && isOwner;
+
+  // Determine display name for reservation
+  let displayReservedBy = gift.reservedBy;
+  if (gift.reservedBySecret && !isOwner) {
+    displayReservedBy = t('secret_genie');
+  }
 
   const handleAction = () => {
     setShowConfetti(true);
@@ -412,8 +485,9 @@ const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceiv
     socket.emit('gift_reserved', {
       wishlistId,
       giftId: gift.id,
-      userName: 'Un Genio', // In a real app, this would be the logged in user
-      giftTitle: gift.title
+      userName: CURRENT_USER_NAME,
+      giftTitle: gift.title,
+      isSecret: isSecretReservation
     });
     setTimeout(() => setShowConfetti(false), 2000);
   };
@@ -578,11 +652,25 @@ const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceiv
                 </button>
               </>
             )}
+            {!hideReservedInfo && gift.status === 'available' && (
+              <div className="w-full flex items-center gap-2 mt-2">
+                <input 
+                  type="checkbox" 
+                  id="secret-reservation" 
+                  checked={isSecretReservation}
+                  onChange={(e) => setIsSecretReservation(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-200 text-jinn-violet focus:ring-jinn-violet"
+                />
+                <label htmlFor="secret-reservation" className="text-xs font-bold text-slate-500 cursor-pointer">
+                  {t('be_secret_genie')}
+                </label>
+              </div>
+            )}
             {isReserved && !hideReservedInfo && (
               <div className="flex flex-col flex-1 gap-3">
                 <div className="bg-slate-100 text-slate-500 py-4 rounded-2xl font-bold flex items-center justify-center gap-2">
                   <CheckCircle2 size={20} />
-                  {t('reserved')} {gift.reservedBy ? `por ${gift.reservedBy}` : ''}
+                  {t('reserved')} {displayReservedBy ? `por ${displayReservedBy}` : ''}
                 </div>
                 {isOwner && (
                   <button 
@@ -598,7 +686,7 @@ const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceiv
             {isCompleted && (
               <div className="flex-1 bg-emerald-50 text-emerald-600 py-4 rounded-2xl font-bold flex items-center justify-center gap-2 border border-emerald-100">
                 <Heart size={20} fill="currentColor" />
-                ¡Deseo Cumplido! {gift.reservedBy ? `(Gracias, ${gift.reservedBy})` : ''}
+                ¡Deseo Cumplido! {displayReservedBy ? `(Gracias, ${displayReservedBy})` : ''}
               </div>
             )}
             {isSurprise && isOwner && (
@@ -645,7 +733,9 @@ const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceiv
                           <User size={20} />
                         </div>
                         <div>
-                          <p className="text-sm font-bold text-slate-800">{c.userName}</p>
+                          <p className="text-sm font-bold text-slate-800">
+                            {(c.isSecret && !isOwner) ? t('secret_genie') : c.userName}
+                          </p>
                           <p className="text-[10px] text-slate-400 uppercase font-bold">{formatCurrency(c.amount, currency)}</p>
                         </div>
                       </div>
@@ -714,76 +804,152 @@ const GiftModal = ({ gift, onClose, ninjaMode, currency, isOwner, onMarkAsReceiv
   );
 };
 
-const LoginView = ({ onLogin }: { onLogin: (provider: 'google' | 'apple') => void }) => {
+const Logo = ({ className = "", size = "auto", animated = false }: { className?: string, size?: string | number, animated?: boolean }) => {
+  const pathVariants = {
+    hidden: { pathLength: 0, opacity: 0, strokeOpacity: 1 },
+    visible: { 
+      pathLength: 1, 
+      opacity: 1,
+      strokeOpacity: [1, 1, 0], // Stay visible while drawing, then fade out
+      transition: { 
+        pathLength: { duration: 1.5, ease: "easeInOut" },
+        opacity: { duration: 0.5 },
+        strokeOpacity: { delay: 1.5, duration: 0.5 }
+      }
+    }
+  };
+
+  const fillVariants = {
+    hidden: { opacity: 0 },
+    visible: { 
+      opacity: 1,
+      transition: { delay: 1.2, duration: 0.8 }
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-jinn-dark flex flex-col items-center justify-center p-6 relative overflow-hidden">
-      {/* Background Magic */}
+    <svg 
+      id="Capa_1" 
+      data-name="Capa 1" 
+      xmlns="http://www.w3.org/2000/svg" 
+      viewBox="0 0 48.59 26.36"
+      className={className}
+      style={{ height: size, width: 'auto' }}
+    >
+      <motion.g
+        initial={animated ? "hidden" : "visible"}
+        animate="visible"
+        transition={{ staggerChildren: 0.2 }} // Faster stagger
+      >
+        {/* Drawing strokes */}
+        <g fill="none" stroke="currentColor" strokeWidth="0.4">
+          <motion.path variants={pathVariants} d="M5.33,21.46c-.96,0-1.85-.16-2.66-.48s-1.46-.81-1.94-1.47c-.48-.66-.72-1.48-.72-2.49s.28-2.14.84-3.46h.42c-.09.49-.14.93-.14,1.33,0,.82.17,1.5.51,2.02s.8.92,1.38,1.19,1.24.43,1.97.46v-9.04l-.35-1.05c1.06-.5,2.11-1,3.15-1.5-.79-.36-1.49-.68-2.12-.98-.69-.35-1.17-.82-1.42-1.41s-.38-1.23-.38-1.91.11-1.6.34-2.68l.18.11c.05.62.41,1.24,1.07,1.86.67.62,1.48,1.21,2.42,1.78s1.86,1.09,2.75,1.56l1.12.62c1.26.71,2.19,1.56,2.79,2.54.59.98.89,2.11.89,3.39,0,.41-.03.84-.08,1.28-.27,1.81-.94,3.33-2,4.56-1.06,1.23-2.32,2.17-3.77,2.8-1.46.64-2.88.96-4.26.96ZM5.47,18.59c1.06,0,2.17-.19,3.32-.58,1.16-.38,2.2-.9,3.13-1.55.93-.65,1.58-1.27,1.96-1.86.38-.59.57-1.26.58-2.01v-.16c0-.84-.29-1.57-.86-2.19-.58-.62-1.42-1.19-2.54-1.73l-3.08-1.45v10.21l-2.73,1.31h.21Z" />
+          <motion.path variants={pathVariants} d="M13.73,26.36v-.22c.73-.3,1.3-.67,1.72-1.11.42-.44.72-.93.91-1.48.19-.55.31-1.15.37-1.79.05-.65.08-1.32.08-2.02v-8.16l-.35-1.05,3.34-1.59v10.95c0,1.9-.53,3.42-1.59,4.57-1.06,1.14-2.55,1.78-4.48,1.92ZM17.32,8.18l-1.6-2.15,2.36-2.32,1.6,2.15-2.36,2.32Z" />
+          <motion.path variants={pathVariants} d="M22.61,8.18l-1.6-2.15,2.36-2.32,1.6,2.15-2.36,2.32ZM23.21,21.08c-.51,0-.93-.2-1.28-.61-.35-.41-.52-.98-.52-1.72v-7.18s-.34-1.05-.34-1.05l3.33-1.59v8.44c0,.46.1.79.3,1,.2.21.45.31.74.31.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.38.42-.76.73-1.14.93-.39.2-.76.3-1.1.3Z" />
+          <motion.path variants={pathVariants} d="M34.13,21.2c-.51,0-.93-.17-1.27-.52-.34-.35-.51-.88-.51-1.59v-7.03c0-.41-.07-.72-.2-.92-.14-.2-.31-.3-.51-.3-.34,0-.7.25-1.08.75-.28.38-.6.91-.97,1.6v7.74l-2.99.04v-9.41l-.34-1.05,3.33-1.59v2.92l.38-.66c.21-.38.4-.71.58-.98.32-.45.7-.79,1.15-1.02.44-.23.89-.34,1.34-.34.54,0,.98.12,1.32.37.67.48,1,1.26,1,2.35v5.94c0,.79.34,1.18,1.03,1.18.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.81.91-1.55,1.36-2.25,1.36Z" />
+          <motion.path variants={pathVariants} d="M45.06,21.2c-.51,0-.93-.17-1.27-.52-.34-.35-.51-.88-.51-1.59v-7.03c0-.41-.07-.72-.2-.92-.14-.2-.31-.3-.51-.3-.34,0-.7.25-1.08.75-.28.38-.6.91-.97,1.6v7.74l-2.99.04v-9.41l-.34-1.05,3.33-1.59v2.92l.38-.66c.21-.38.4-.71.58-.98.32-.45.7-.79,1.15-1.02.44-.23.89-.34,1.34-.34.54,0,.98.12,1.32.37.67.48,1,1.26,1,2.35v5.94c0,.79.34,1.18,1.03,1.18.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.81.91-1.56,1.36-2.25,1.36Z" />
+          <motion.path variants={pathVariants} d="M34.74,24.92c-.67,0-1.34-.04-2-.12s-1.31-.17-1.91-.26-1.19-.17-1.75-.23-1.1-.1-1.63-.1c-1.17,0-2.13.22-2.9.67l-.29-.22c1-.87,2.04-1.47,3.1-1.79s2.14-.48,3.24-.47c.67,0,1.33.04,1.99.11s1.29.16,1.91.25,1.21.17,1.77.24,1.1.1,1.63.1c1.17,0,2.13-.22,2.9-.67l.29.22c-1,.87-2.04,1.47-3.12,1.79-1.07.32-2.15.48-3.22.47Z" />
+        </g>
+
+        {/* Fills */}
+        <g fill="currentColor">
+          <motion.path variants={fillVariants} d="M5.33,21.46c-.96,0-1.85-.16-2.66-.48s-1.46-.81-1.94-1.47c-.48-.66-.72-1.48-.72-2.49s.28-2.14.84-3.46h.42c-.09.49-.14.93-.14,1.33,0,.82.17,1.5.51,2.02s.8.92,1.38,1.19,1.24.43,1.97.46v-9.04l-.35-1.05c1.06-.5,2.11-1,3.15-1.5-.79-.36-1.49-.68-2.12-.98-.69-.35-1.17-.82-1.42-1.41s-.38-1.23-.38-1.91.11-1.6.34-2.68l.18.11c.05.62.41,1.24,1.07,1.86.67.62,1.48,1.21,2.42,1.78s1.86,1.09,2.75,1.56l1.12.62c1.26.71,2.19,1.56,2.79,2.54.59.98.89,2.11.89,3.39,0,.41-.03.84-.08,1.28-.27,1.81-.94,3.33-2,4.56-1.06,1.23-2.32,2.17-3.77,2.8-1.46.64-2.88.96-4.26.96ZM5.47,18.59c1.06,0,2.17-.19,3.32-.58,1.16-.38,2.2-.9,3.13-1.55.93-.65,1.58-1.27,1.96-1.86.38-.59.57-1.26.58-2.01v-.16c0-.84-.29-1.57-.86-2.19-.58-.62-1.42-1.19-2.54-1.73l-3.08-1.45v10.21l-2.73,1.31h.21Z" />
+          <motion.path variants={fillVariants} d="M13.73,26.36v-.22c.73-.3,1.3-.67,1.72-1.11.42-.44.72-.93.91-1.48.19-.55.31-1.15.37-1.79.05-.65.08-1.32.08-2.02v-8.16l-.35-1.05,3.34-1.59v10.95c0,1.9-.53,3.42-1.59,4.57-1.06,1.14-2.55,1.78-4.48,1.92ZM17.32,8.18l-1.6-2.15,2.36-2.32,1.6,2.15-2.36,2.32Z" />
+          <motion.path variants={fillVariants} d="M22.61,8.18l-1.6-2.15,2.36-2.32,1.6,2.15-2.36,2.32ZM23.21,21.08c-.51,0-.93-.2-1.28-.61-.35-.41-.52-.98-.52-1.72v-7.18s-.34-1.05-.34-1.05l3.33-1.59v8.44c0,.46.1.79.3,1,.2.21.45.31.74.31.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.38.42-.76.73-1.14.93-.39.2-.76.3-1.1.3Z" />
+          <motion.path variants={fillVariants} d="M34.13,21.2c-.51,0-.93-.17-1.27-.52-.34-.35-.51-.88-.51-1.59v-7.03c0-.41-.07-.72-.2-.92-.14-.2-.31-.3-.51-.3-.34,0-.7.25-1.08.75-.28.38-.6.91-.97,1.6v7.74l-2.99.04v-9.41l-.34-1.05,3.33-1.59v2.92l.38-.66c.21-.38.4-.71.58-.98.32-.45.7-.79,1.15-1.02.44-.23.89-.34,1.34-.34.54,0,.98.12,1.32.37.67.48,1,1.26,1,2.35v5.94c0,.79.34,1.18,1.03,1.18.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.81.91-1.55,1.36-2.25,1.36Z" />
+          <motion.path variants={fillVariants} d="M45.06,21.2c-.51,0-.93-.17-1.27-.52-.34-.35-.51-.88-.51-1.59v-7.03c0-.41-.07-.72-.2-.92-.14-.2-.31-.3-.51-.3-.34,0-.7.25-1.08.75-.28.38-.6.91-.97,1.6v7.74l-2.99.04v-9.41l-.34-1.05,3.33-1.59v2.92l.38-.66c.21-.38.4-.71.58-.98.32-.45.7-.79,1.15-1.02.44-.23.89-.34,1.34-.34.54,0,.98.12,1.32.37.67.48,1,1.26,1,2.35v5.94c0,.79.34,1.18,1.03,1.18.37,0,.75-.14,1.15-.44l.14.2-1.28,1.41c-.81.91-1.56,1.36-2.25,1.36Z" />
+          <motion.path variants={fillVariants} d="M34.74,24.92c-.67,0-1.34-.04-2-.12s-1.31-.17-1.91-.26-1.19-.17-1.75-.23-1.1-.1-1.63-.1c-1.17,0-2.13.22-2.9.67l-.29-.22c1-.87,2.04-1.47,3.1-1.79s2.14-.48,3.24-.47c.67,0,1.33.04,1.99.11s1.29.16,1.91.25,1.21.17,1.77.24,1.1.1,1.63.1c1.17,0,2.13-.22,2.9-.67l.29.22c-1,.87-2.04,1.47-3.12,1.79-1.07.32-2.15.48-3.22.47Z" />
+        </g>
+      </motion.g>
+    </svg>
+  );
+};
+
+const LoginView = ({ onLogin, onShowPrivacy, onShowTerms }: { onLogin: (provider: 'google' | 'apple') => void, onShowPrivacy: () => void, onShowTerms: () => void }) => {
+  return (
+    <div className="min-h-screen bg-[#1a0b2e] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      {/* Living Background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <motion.div 
           animate={{ 
+            x: [0, 100, 0],
+            y: [0, 50, 0],
             scale: [1, 1.2, 1],
-            rotate: [0, 90, 0],
-            opacity: [0.3, 0.5, 0.3]
           }}
-          transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-          className="absolute -top-1/2 -left-1/2 w-full h-full bg-gradient-radial from-jinn-violet/20 to-transparent blur-3xl"
+          transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -top-[20%] -left-[10%] w-[80%] h-[80%] bg-jinn-violet/30 rounded-full blur-[120px]"
         />
         <motion.div 
           animate={{ 
+            x: [0, -80, 0],
+            y: [0, 100, 0],
             scale: [1, 1.3, 1],
-            rotate: [0, -90, 0],
-            opacity: [0.2, 0.4, 0.2]
           }}
-          transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
-          className="absolute -bottom-1/2 -right-1/2 w-full h-full bg-gradient-radial from-jinn-coral/20 to-transparent blur-3xl"
+          transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute -bottom-[20%] -right-[10%] w-[70%] h-[70%] bg-jinn-coral/20 rounded-full blur-[120px]"
+        />
+        <motion.div 
+          animate={{ 
+            opacity: [0.1, 0.3, 0.1],
+          }}
+          transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full bg-gradient-radial from-jinn-violet/10 to-transparent"
         />
       </div>
 
       <motion.div 
-        initial={{ opacity: 0, y: 40 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 1 }}
         className="relative z-10 w-full max-w-md text-center"
       >
-        <div className="mb-12 inline-flex items-center justify-center w-24 h-24 bg-white rounded-[2.5rem] shadow-2xl shadow-jinn-violet/40">
-          <Sparkles className="text-jinn-violet" size={48} />
-        </div>
+        <Logo className="text-white mb-16 mx-auto" size={240} animated={true} />
+        
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 3, duration: 1 }}
+          className="space-y-12"
+        >
+          <p className="text-white/70 text-lg font-medium leading-relaxed tracking-wide">
+            Tus deseos, concedidos por quienes más te quieren. <br/>
+            <span className="text-white font-light opacity-50 italic">La magia empieza aquí.</span>
+          </p>
 
-        <h1 className="font-display text-6xl font-black text-white mb-6 tracking-tighter">
-          JINN
-        </h1>
-        <p className="text-white/60 text-xl font-medium mb-12 leading-relaxed">
-          Tus deseos, concedidos por quienes más te quieren. <br/>
-          <span className="text-jinn-neon font-black">La magia empieza aquí.</span>
-        </p>
+          <div className="space-y-4 px-8">
+            <motion.button 
+              whileHover={{ y: -2, backgroundColor: 'rgba(255,255,255,0.1)' }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => onLogin('google')}
+              className="w-full bg-white/5 backdrop-blur-md text-white py-4 rounded-full font-medium text-sm flex items-center justify-center gap-3 border border-white/10 transition-all"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-4 h-4 grayscale opacity-70" alt="Google" />
+              Continuar con Google
+            </motion.button>
 
-        <div className="space-y-4">
-          <motion.button 
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => onLogin('google')}
-            className="w-full bg-white text-slate-900 py-5 rounded-2xl font-black text-lg flex items-center justify-center gap-4 shadow-xl hover:bg-slate-50 transition-all"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-6 h-6" alt="Google" />
-            Continuar con Google
-          </motion.button>
+            <motion.button 
+              whileHover={{ y: -2, backgroundColor: 'rgba(255,255,255,0.1)' }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => onLogin('apple')}
+              className="w-full bg-white/5 backdrop-blur-md text-white py-4 rounded-full font-medium text-sm flex items-center justify-center gap-3 border border-white/10 transition-all"
+            >
+              <svg className="w-4 h-4 fill-white/70" viewBox="0 0 24 24">
+                <path d="M17.05 20.28c-.96.95-2.04 1.72-3.24 1.72-1.16 0-1.56-.73-2.95-.73-1.4 0-1.85.71-2.95.71-1.16 0-2.18-.73-3.21-1.75-2.1-2.08-3.69-5.88-3.69-9.2 0-3.3 2.06-5.05 4.02-5.05 1.03 0 2.01.71 2.64.71.62 0 1.76-.78 2.96-.78 1.24 0 2.34.64 3.09 1.71-2.52 1.51-2.12 5.09.43 6.13-.93 2.27-2.14 4.54-3.1 5.54zM12.03 5.07c0-2.31 1.91-4.18 4.22-4.18.03 0 .06 0 .09.01-.03 2.31-1.92 4.18-4.22 4.18-.03 0-.06 0-.09-.01z" />
+              </svg>
+              Continuar con Apple
+            </motion.button>
+          </div>
 
-          <motion.button 
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => onLogin('apple')}
-            className="w-full bg-black text-white py-5 rounded-2xl font-black text-lg flex items-center justify-center gap-4 shadow-xl border border-white/10 hover:bg-zinc-900 transition-all"
-          >
-            <svg className="w-6 h-6 fill-current" viewBox="0 0 24 24">
-              <path d="M17.05 20.28c-.96.95-2.04 1.72-3.24 1.72-1.16 0-1.56-.73-2.95-.73-1.4 0-1.85.71-2.95.71-1.16 0-2.18-.73-3.21-1.75-2.1-2.08-3.69-5.88-3.69-9.2 0-3.3 2.06-5.05 4.02-5.05 1.03 0 2.01.71 2.64.71.62 0 1.76-.78 2.96-.78 1.24 0 2.34.64 3.09 1.71-2.52 1.51-2.12 5.09.43 6.13-.93 2.27-2.14 4.54-3.1 5.54zM12.03 5.07c0-2.31 1.91-4.18 4.22-4.18.03 0 .06 0 .09.01-.03 2.31-1.92 4.18-4.22 4.18-.03 0-.06 0-.09-.01z" />
-            </svg>
-            Continuar con Apple
-          </motion.button>
-        </div>
-
-        <p className="mt-12 text-white/30 text-sm font-medium">
-          Al continuar, aceptas nuestros <br/>
-          <a href="#" className="text-white/50 hover:text-jinn-neon underline underline-offset-4">Términos de Servicio</a> y <a href="#" className="text-white/50 hover:text-jinn-neon underline underline-offset-4">Privacidad</a>
-        </p>
+          <div className="space-y-2">
+            <p className="text-white/30 text-[11px] font-medium leading-relaxed">
+              Al continuar, aceptas nuestros <br/>
+              <button onClick={onShowTerms} className="text-white/50 hover:text-jinn-violet underline underline-offset-4">Términos de Servicio</button> y <button onClick={onShowPrivacy} className="text-white/50 hover:text-jinn-violet underline underline-offset-4">Privacidad</button>
+            </p>
+            <p className="text-white/10 text-[9px] font-medium tracking-widest uppercase pt-4">
+              Djinn 2026
+            </p>
+          </div>
+        </motion.div>
       </motion.div>
     </div>
   );
@@ -837,13 +1003,27 @@ const WishlistCard = ({ wishlist, onClick, onToggleFavorite }: { wishlist: Wishl
   );
 };
 
-const WishlistSection = ({ title, wishlists, onOpen, onToggleFavorite }: { title: string, wishlists: Wishlist[], onOpen: (id: string) => void, onToggleFavorite: (id: string) => void }) => {
-  if (wishlists.length === 0) return null;
+const WishlistSection = ({ title, wishlists, onOpen, onToggleFavorite, onAdd }: { title: string, wishlists: Wishlist[], onOpen: (id: string) => void, onToggleFavorite: (id: string) => void, onAdd?: () => void }) => {
+  if (wishlists.length === 0 && !onAdd) return null;
 
   return (
     <div className="space-y-6">
       <h2 className="font-display text-2xl font-black text-slate-900 px-2">{title}</h2>
       <div className="flex gap-6 overflow-x-auto pb-8 px-2 scrollbar-hide snap-x">
+        {onAdd && (
+          <div className="snap-start">
+            <motion.div
+              whileHover={{ y: -8 }}
+              onClick={onAdd}
+              className="group relative flex-shrink-0 w-[300px] h-[400px] rounded-[2.5rem] border-4 border-dashed border-slate-100 flex flex-col items-center justify-center gap-4 cursor-pointer hover:border-jinn-violet/30 hover:bg-jinn-violet/5 transition-all duration-500"
+            >
+              <div className="w-16 h-16 rounded-full bg-jinn-violet/10 flex items-center justify-center text-jinn-violet group-hover:scale-110 transition-transform">
+                <Plus size={32} />
+              </div>
+              <span className="font-display text-xl font-black text-slate-400 group-hover:text-jinn-violet transition-colors">Nueva Lista</span>
+            </motion.div>
+          </div>
+        )}
         {wishlists.map((wishlist) => (
           <div key={wishlist.id} className="snap-start">
             <WishlistCard 
@@ -879,15 +1059,15 @@ const HelpModal = ({ onClose }: { onClose: () => void }) => {
     },
     {
       icon: <Sparkles size={24} />,
-      title: "3. Modo Ninja (Surprise!)",
-      desc: "Actívalo para no ver qué regalos ya han sido reservados. ¡Mantén la emoción hasta el final!",
-      img: "https://picsum.photos/seed/ninja/600/400"
+      title: "3. Modo Secreto (¡Sorpresa!)",
+      desc: "Por defecto, Djinn oculta quién reservó qué en tu propia lista. Así, ¡el regalo sigue siendo una sorpresa hasta que lo recibes!",
+      img: "https://picsum.photos/seed/secret/600/400"
     },
     {
-      icon: <Coins size={24} />,
-      title: "4. Regalos Colectivos",
-      desc: "¿Algo muy caro? Activa el regalo grupal para que varios genios aporten lo que puedan.",
-      img: "https://picsum.photos/seed/money/600/400"
+      icon: <User size={24} />,
+      title: "4. Genio Secreto (Anónimo)",
+      desc: "Al reservar o contribuir, puedes elegir ser un 'Genio Secreto'. Nadie, excepto el dueño de la lista, sabrá quién hizo el regalo.",
+      img: "https://picsum.photos/seed/anonymous/600/400"
     }
   ];
 
@@ -912,7 +1092,7 @@ const HelpModal = ({ onClose }: { onClose: () => void }) => {
           <div className="w-16 h-16 bg-jinn-neon/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
             <Sparkles className="text-jinn-dark" size={32} />
           </div>
-          <h2 className="font-display text-4xl font-black text-slate-900 mb-4">Guía Mágica de Jinn</h2>
+          <h2 className="font-display text-4xl font-black text-slate-900 mb-4">Guía Mágica de Djinn</h2>
           <p className="text-slate-500">Todo lo que necesitas saber para dominar tu lámpara.</p>
         </div>
 
@@ -947,7 +1127,11 @@ const HelpModal = ({ onClose }: { onClose: () => void }) => {
             </li>
             <li className="flex items-start gap-3">
               <div className="w-1.5 h-1.5 rounded-full bg-jinn-neon mt-1.5 flex-shrink-0" />
-              <p><span className="text-white font-bold">Creador (Tú):</span> Con el <span className="text-jinn-neon">Modo Ninja</span> activado, los regalos reservados se ocultan tras un brillo mágico. ¡Tú eliges cuándo descubrir la sorpresa!</p>
+              <p><span className="text-white font-bold">Creador (Tú):</span> Con el <span className="text-jinn-neon">Modo Secreto</span> activado, los regalos reservados se ocultan tras un brillo mágico. ¡Tú eliges cuándo descubrir la sorpresa!</p>
+            </li>
+            <li className="flex items-start gap-3">
+              <div className="w-1.5 h-1.5 rounded-full bg-jinn-neon mt-1.5 flex-shrink-0" />
+              <p><span className="text-white font-bold">Genio Secreto:</span> Si alguien regala de forma anónima, solo tú podrás ver quién fue para poder agradecerle. El resto de los genios solo verán "Genio Secreto".</p>
             </li>
           </ul>
         </div>
@@ -982,7 +1166,7 @@ const PrivacyModal = ({ onClose }: { onClose: () => void }) => {
         </button>
         <h2 className="font-display text-3xl font-black text-slate-900 mb-6">Política de Privacidad</h2>
         <div className="space-y-6 text-slate-600 text-sm leading-relaxed">
-          <p>En Jinn, valoramos tu privacidad. Esta política describe cómo manejamos tu información.</p>
+          <p>En Djinn, valoramos tu privacidad. Esta política describe cómo manejamos tu información.</p>
           <h3 className="font-bold text-slate-900">1. Información que recolectamos</h3>
           <p>Solo recolectamos la información necesaria para que la aplicación funcione: tu nombre, correo electrónico y los datos de tus listas de deseos.</p>
           <h3 className="font-bold text-slate-900">2. Uso de la información</h3>
@@ -1022,12 +1206,12 @@ const TermsModal = ({ onClose }: { onClose: () => void }) => {
         </button>
         <h2 className="font-display text-3xl font-black text-slate-900 mb-6">Términos y Condiciones</h2>
         <div className="space-y-6 text-slate-600 text-sm leading-relaxed">
-          <p className="font-bold text-red-500 uppercase tracking-tighter">Aviso Importante: Jinn es únicamente una plataforma intermediaria.</p>
-          <p>Al utilizar Jinn, aceptas los siguientes términos:</p>
+          <p className="font-bold text-red-500 uppercase tracking-tighter">Aviso Importante: Djinn es únicamente una plataforma intermediaria.</p>
+          <p>Al utilizar Djinn, aceptas los siguientes términos:</p>
           <h3 className="font-bold text-slate-900">1. Naturaleza del Servicio</h3>
-          <p>Jinn es una herramienta de organización y comunicación. No procesamos pagos, no vendemos productos y no gestionamos envíos. Todas las transacciones financieras ocurren fuera de nuestra plataforma.</p>
+          <p>Djinn es una herramienta de organización y comunicación. No procesamos pagos, no vendemos productos y no gestionamos envíos. Todas las transacciones financieras ocurren fuera de nuestra plataforma.</p>
           <h3 className="font-bold text-slate-900">2. Deslinde de Responsabilidad</h3>
-          <p>Jinn desinda toda responsabilidad legal por cualquier conflicto, fraude, incumplimiento o daño que pueda surgir de las interacciones entre usuarios o con terceros (tiendas, bancos, procesadores de pago). El uso de la aplicación es bajo tu propio riesgo.</p>
+          <p>Djinn desinda toda responsabilidad legal por cualquier conflicto, fraude, incumplimiento o daño que pueda surgir de las interacciones entre usuarios o con terceros (tiendas, bancos, procesadores de pago). El uso de la aplicación es bajo tu propio riesgo.</p>
           <h3 className="font-bold text-slate-900">3. Contenido del Usuario</h3>
           <p>Eres responsable de la veracidad de la información que publicas en tus listas.</p>
           <h3 className="font-bold text-slate-900">4. Modificaciones</h3>
@@ -1179,10 +1363,12 @@ const ContributionModal = ({ gift, wishlist, onClose, onConfirm, onNotify }: {
   gift: Gift, 
   wishlist: Wishlist, 
   onClose: () => void, 
-  onConfirm: (amount: number, voiceMessageUrl?: string) => void,
+  onConfirm: (amount: number, isSecret: boolean, voiceMessageUrl?: string) => void,
   onNotify: (title: string, msg: string) => void
 }) => {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState('');
+  const [isSecret, setIsSecret] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
   const remaining = gift.targetAmount - gift.contributions;
@@ -1190,7 +1376,7 @@ const ContributionModal = ({ gift, wishlist, onClose, onConfirm, onNotify }: {
   const handleConfirm = () => {
     const numAmount = Number(amount);
     if (numAmount > 0 && numAmount <= remaining) {
-      onConfirm(numAmount, voiceMessage || undefined);
+      onConfirm(numAmount, isSecret, voiceMessage || undefined);
     }
   };
 
@@ -1260,6 +1446,19 @@ const ContributionModal = ({ gift, wishlist, onClose, onConfirm, onNotify }: {
               )}
             </div>
 
+            <div className="flex items-center gap-2 p-4 bg-slate-50 rounded-2xl">
+              <input 
+                type="checkbox" 
+                id="secret-contribution" 
+                checked={isSecret}
+                onChange={(e) => setIsSecret(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-200 text-jinn-violet focus:ring-jinn-violet"
+              />
+              <label htmlFor="secret-contribution" className="text-xs font-bold text-slate-500 cursor-pointer">
+                {t('be_secret_genie')}
+              </label>
+            </div>
+
             <div className="space-y-2">
               <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-1">Mensaje de Voz (Opcional)</label>
               <button 
@@ -1321,7 +1520,7 @@ const ContributionModal = ({ gift, wishlist, onClose, onConfirm, onNotify }: {
             )}
 
             <div className="text-[10px] text-slate-400 text-center px-4 italic">
-              Al confirmar, Jinn registrará tu aporte en la lista. Recuerda realizar el pago externo para que sea efectivo.
+              Al confirmar, Djinn registrará tu aporte en la lista. Recuerda realizar el pago externo para que sea efectivo.
             </div>
 
             <button 
@@ -1330,6 +1529,112 @@ const ContributionModal = ({ gift, wishlist, onClose, onConfirm, onNotify }: {
               className="w-full bg-jinn-violet text-white py-4 rounded-2xl font-black shadow-xl shadow-jinn-violet/20 hover:bg-jinn-coral transition-all disabled:opacity-50"
             >
               Confirmar Aporte
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+const CreateWishlistModal = ({ onClose, onCreate }: { onClose: () => void, onCreate: (data: Partial<Wishlist>) => void }) => {
+  const { t } = useTranslation();
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [vibe, setVibe] = useState('General');
+  const [coverImage, setCoverImage] = useState('https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop');
+
+  const vibes = [
+    { id: 'General', label: 'General', icon: <Sparkles size={16} /> },
+    { id: 'Boda', label: 'Boda', icon: <Heart size={16} /> },
+    { id: 'Baby Shower', label: 'Baby Shower', icon: <PartyPopper size={16} /> },
+    { id: 'Cumpleaños', label: 'Cumpleaños', icon: <PartyPopper size={16} /> },
+    { id: 'Mudanza', label: 'Mudanza', icon: <MapPin size={16} /> },
+    { id: 'Viaje', label: 'Viaje', icon: <Globe size={16} /> },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-jinn-dark/60 backdrop-blur-sm" 
+      />
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 20 }}
+        className="relative bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden max-h-[90vh] overflow-y-auto"
+      >
+        <div className="p-8">
+          <div className="flex justify-between items-center mb-8">
+            <h2 className="font-display text-3xl font-black text-slate-900">Nueva Lámpara</h2>
+            <button onClick={onClose} className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 hover:text-slate-600">
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-1">Título de la Lista</label>
+              <input 
+                type="text" 
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Ej: Mi Boda, Baby Shower de Lucas..."
+                className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl py-4 px-6 text-sm focus:outline-none focus:ring-4 focus:ring-jinn-violet/10 focus:border-jinn-violet/20 transition-all"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-1">Descripción</label>
+              <textarea 
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={3}
+                placeholder="Cuéntale a tus amigos de qué trata esta lista..."
+                className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl py-4 px-6 text-sm focus:outline-none focus:ring-4 focus:ring-jinn-violet/10 transition-all resize-none"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-1">Vibe / Categoría</label>
+              <div className="grid grid-cols-2 gap-2">
+                {vibes.map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => setVibe(v.id)}
+                    className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-bold transition-all ${
+                      vibe === v.id 
+                      ? 'bg-jinn-violet text-white shadow-lg shadow-jinn-violet/20' 
+                      : 'bg-slate-50 text-slate-400 border border-slate-100'
+                    }`}
+                  >
+                    {v.icon}
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-1">URL de Portada (Opcional)</label>
+              <input 
+                type="text" 
+                value={coverImage}
+                onChange={(e) => setCoverImage(e.target.value)}
+                className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl py-4 px-6 text-sm focus:outline-none focus:ring-4 focus:ring-jinn-violet/10 transition-all"
+              />
+            </div>
+
+            <button 
+              onClick={() => onCreate({ title, description, vibe, coverImage })}
+              disabled={!title}
+              className="w-full bg-jinn-violet text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-jinn-violet/20 hover:bg-jinn-coral transition-all disabled:opacity-50 mt-4"
+            >
+              Crear Lámpara
             </button>
           </div>
         </div>
@@ -1502,28 +1807,69 @@ const AddGiftModal = ({ onClose, onAdd, isOwner }: {
 export default function App() {
   return (
     <HashRouter>
-      <JinnApp />
+      <DjinnApp />
     </HashRouter>
   );
 }
 
-function JinnApp() {
+function DjinnApp() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const { wishlistId: urlWishlistId } = useParams();
+  const location = useLocation();
+  const wishlistMatch = useMatch('/wishlist/:wishlistId');
+  const urlWishlistId = wishlistMatch?.params.wishlistId;
   
-  const [user, setUser] = useState<{ id: string, name: string, email: string, avatar: string } | null>({
-    id: 'u1',
-    name: 'Daniel Gandolfo',
-    email: 'daniel.gandolfo@gmail.com',
-    avatar: 'https://i.pravatar.cc/150?u=daniel'
-  });
+  const [user, setUser] = useState<{ id: string, name: string, email: string, avatar: string } | null>(null);
+  const [loading, setLoading] = useState(true);
   
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        const newUser = {
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || 'Genio',
+          email: firebaseUser.email || '',
+          avatar: firebaseUser.photoURL || `https://i.pravatar.cc/150?u=${firebaseUser.uid}`
+        };
+        setUser(newUser);
+        
+        // Assign mock data to current user for testing
+        setWishlists(prev => prev.map(w => {
+          if (w.ownerId === 'u1') {
+            return { ...w, ownerId: firebaseUser.uid, creator: newUser.name };
+          }
+          return w;
+        }));
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async (provider: 'google' | 'apple') => {
+    try {
+      const authProvider = provider === 'google' ? googleProvider : appleProvider;
+      await signInWithPopup(auth, authProvider);
+    } catch (error) {
+      console.error("Error logging in:", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate('/login');
+    } catch (error) {
+      console.error("Error logging out:", error);
+    }
+  };
+
   const [wishlists, setWishlists] = useState<Wishlist[]>(MOCK_WISHLISTS);
   const [selectedGift, setSelectedGift] = useState<Gift | null>(null);
   const [activeTab, setActiveTab] = useState('all');
-  const [ninjaMode, setNinjaMode] = useState(false);
-  const [points, setPoints] = useState(1250);
+  const [secretMode, setSecretMode] = useState(true);
   const [currency, setCurrency] = useState(getLocalCurrency());
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -1567,7 +1913,7 @@ function JinnApp() {
     if (notificationsEnabled && Notification.permission === "granted") {
       new Notification(title, {
         body,
-        icon: "/favicon.ico" // Or a generic Jinn icon if available
+        icon: "/favicon.ico" // Or a generic Djinn icon if available
       });
     }
   };
@@ -1584,8 +1930,17 @@ function JinnApp() {
     }
 
     const handleGiftReserved = (data: any) => {
+      const isSecret = data.isSecret;
+      const isOwner = selectedWishlist?.ownerId === user?.id;
+      
       const title = "✨ ¡Deseo en camino!";
-      const msg = `${data.userName} ha reservado: ${data.giftTitle}`;
+      let msg = isSecret 
+        ? `Un Genio Secreto ha reservado: ${data.giftTitle}`
+        : `${data.userName} ha reservado: ${data.giftTitle}`;
+      
+      if (isSecret && isOwner) {
+        msg = `${data.userName} ha reservado un regalo en modo secreto: ${data.giftTitle}`;
+      }
       
       setShowNotification({ title, msg });
       sendPushNotification(title, msg);
@@ -1597,7 +1952,12 @@ function JinnApp() {
         if (w.id === data.wishlistId) {
           return {
             ...w,
-            gifts: w.gifts.map(g => g.id === data.giftId ? { ...g, status: 'reserved', reservedBy: data.userName } : g)
+            gifts: w.gifts.map(g => g.id === data.giftId ? { 
+              ...g, 
+              status: 'reserved', 
+              reservedBy: data.userName,
+              reservedBySecret: isSecret
+            } : g)
           };
         }
         return w;
@@ -1647,37 +2007,79 @@ function JinnApp() {
       }));
     };
 
+    const handleSecretModeDisabled = (data: any) => {
+      const title = "🔓 ¡Se revelaron las sorpresas!";
+      const msg = `El dueño de la lista ha desactivado el modo secreto. ¡Ya puedes ver quién regaló qué!`;
+      setShowNotification({ title, msg });
+      sendPushNotification(title, msg);
+      setTimeout(() => setShowNotification(null), 5000);
+    };
+
+    const handleContributionReceived = (data: any) => {
+      const isSecret = data.isSecret;
+      const isOwner = selectedWishlist?.ownerId === user?.id;
+      
+      const title = "💰 ¡Nuevo aporte!";
+      let msg = isSecret 
+        ? `Un Genio Secreto ha aportado a: ${data.giftTitle}`
+        : `${data.userName} ha aportado a: ${data.giftTitle}`;
+      
+      if (isSecret && isOwner) {
+        msg = `${data.userName} ha aportado en modo secreto: ${data.giftTitle}`;
+      }
+      
+      setShowNotification({ title, msg });
+      sendPushNotification(title, msg);
+      setTimeout(() => setShowNotification(null), 5000);
+
+      setWishlists(prev => prev.map(w => {
+        if (w.id === data.wishlistId) {
+          return {
+            ...w,
+            gifts: w.gifts.map(g => {
+              if (g.id === data.giftId) {
+                const newContribution: Contribution = {
+                  id: data.contributionId,
+                  userName: data.userName,
+                  amount: data.amount,
+                  timestamp: data.timestamp,
+                  isSecret: data.isSecret,
+                  voiceMessageUrl: data.voiceMessageUrl
+                };
+                const newContributions = g.contributions + data.amount;
+                return { 
+                  ...g, 
+                  contributions: newContributions,
+                  status: newContributions >= g.targetAmount ? 'completed' : g.status,
+                  contributionHistory: [...(g.contributionHistory || []), newContribution]
+                };
+              }
+              return g;
+            })
+          };
+        }
+        return w;
+      }));
+    };
+
     socket.on('gift_reserved_update', handleGiftReserved);
     socket.on('gift_received_update', handleGiftReceived);
     socket.on('message_received', handleMessageReceived);
+    socket.on('secret_mode_disabled_update', handleSecretModeDisabled);
+    socket.on('contribution_received_update', handleContributionReceived);
 
     return () => {
       socket.off('gift_reserved_update', handleGiftReserved);
       socket.off('gift_received_update', handleGiftReceived);
       socket.off('message_received', handleMessageReceived);
+      socket.off('secret_mode_disabled_update', handleSecretModeDisabled);
+      socket.off('contribution_received_update', handleContributionReceived);
     };
   }, [selectedWishlistId]);
 
   const handleOpenWishlist = (id: string) => {
     navigate(`/wishlist/${id}`);
     window.scrollTo(0, 0);
-  };
-
-  const handleLogin = (provider: 'google' | 'apple') => {
-    // Mock Login
-    const mockUser = {
-      id: 'u1',
-      name: 'Daniel Gandolfo',
-      email: 'daniel.gandolfo@gmail.com',
-      avatar: 'https://i.pravatar.cc/150?u=daniel'
-    };
-    setUser(mockUser);
-    navigate('/');
-  };
-
-  const handleLogout = () => {
-    setUser(null);
-    navigate('/login');
   };
 
   const handleSavePaymentInfo = (info: PaymentInfo) => {
@@ -1696,57 +2098,26 @@ function JinnApp() {
     setTimeout(() => setShowNotification(null), 3000);
   };
 
-  const handleConfirmContribution = (amount: number, voiceMessageUrl?: string) => {
+  const handleConfirmContribution = (amount: number, isSecret: boolean, voiceMessageUrl?: string) => {
     if (!selectedWishlistId || !contributingGift) return;
 
-    setWishlists(prev => prev.map(w => {
-      if (w.id === selectedWishlistId) {
-        return {
-          ...w,
-          gifts: w.gifts.map(g => {
-            if (g.id === contributingGift.id) {
-              const newContributions = g.contributions + amount;
-              const isNewlyCompleted = newContributions >= g.targetAmount;
-              
-              if (isNewlyCompleted) {
-                confetti({
-                  particleCount: 150,
-                  spread: 70,
-                  origin: { y: 0.6 },
-                  colors: ['#7C3AED', '#F43F5E', '#10B981']
-                });
-              }
+    const contributionId = Math.random().toString(36).substr(2, 9);
+    const timestamp = new Date().toISOString();
 
-              const newContribution: Contribution = {
-                id: Math.random().toString(36).substr(2, 9),
-                userName: user?.name || 'Un Genio',
-                amount,
-                timestamp: new Date().toISOString(),
-                voiceMessageUrl
-              };
-
-              return { 
-                ...g, 
-                contributions: newContributions,
-                status: isNewlyCompleted ? 'completed' : g.status,
-                revealed: isNewlyCompleted ? true : g.revealed,
-                contributionHistory: [...(g.contributionHistory || []), newContribution]
-              };
-            }
-            return g;
-          })
-        };
-      }
-      return w;
-    }));
+    socket.emit('new_contribution', {
+      wishlistId: selectedWishlistId,
+      giftId: contributingGift.id,
+      giftTitle: contributingGift.title,
+      userName: user?.name || 'Un Genio',
+      amount,
+      isSecret,
+      voiceMessageUrl,
+      contributionId,
+      timestamp
+    });
 
     setShowContributionModal(false);
     setContributingGift(null);
-    setShowNotification({
-      title: "💖 ¡Aporte registrado!",
-      msg: `Has aportado ${formatCurrency(amount, currency)} para "${contributingGift.title}".`
-    });
-    setTimeout(() => setShowNotification(null), 3000);
   };
 
   const handleAddGift = (giftData: Partial<Gift>) => {
@@ -1787,6 +2158,32 @@ function JinnApp() {
     setTimeout(() => setShowNotification(null), 3000);
   };
 
+  const handleCreateWishlist = (wishlistData: Partial<Wishlist>) => {
+    const newWishlist: Wishlist = {
+      id: Math.random().toString(36).substr(2, 9),
+      title: wishlistData.title || 'Nueva Lámpara',
+      creator: user?.name || 'Un Genio',
+      ownerId: user?.id || '',
+      description: wishlistData.description || '',
+      vibe: wishlistData.vibe || 'General',
+      coverImage: wishlistData.coverImage || 'https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=1000&auto=format&fit=crop',
+      participantCount: 0,
+      isFavorite: false,
+      magicCode: Math.random().toString(36).substr(2, 6).toUpperCase(),
+      gifts: [],
+      isArchived: false
+    };
+
+    setWishlists(prev => [newWishlist, ...prev]);
+    setShowCreateModal(false);
+    setShowNotification({
+      title: "✨ ¡Lámpara frotada!",
+      msg: `"${newWishlist.title}" ha sido creada con éxito.`
+    });
+    setTimeout(() => setShowNotification(null), 3000);
+    navigate(`/wishlist/${newWishlist.id}`);
+  };
+
   const handleBackToDashboard = () => {
     navigate('/');
     window.scrollTo(0, 0);
@@ -1795,7 +2192,7 @@ function JinnApp() {
   const handleJoinList = () => {
     if (joinCode.trim()) {
       // In a real app, we would validate the code and fetch the list
-      if (joinCode === 'JINN-2026') {
+      if (joinCode === 'DJINN-2026') {
         handleOpenWishlist('w1');
       }
       setShowJoinModal(false);
@@ -1807,6 +2204,18 @@ function JinnApp() {
         msg: `Alguien se ha unido a tu lista usando el código mágico.`
       });
       setTimeout(() => setShowNotification(null), 5000);
+    }
+  };
+
+  const toggleSecretMode = () => {
+    const newMode = !secretMode;
+    setSecretMode(newMode);
+    if (!newMode && selectedWishlistId) {
+      // Notify everyone that surprises are over
+      socket.emit('secret_mode_disabled', {
+        wishlistId: selectedWishlistId,
+        userName: user?.name
+      });
     }
   };
 
@@ -1890,8 +2299,8 @@ function JinnApp() {
     };
   };
 
-  const myLists = wishlists.filter(w => w.ownerId === CURRENT_USER_ID && !w.isArchived);
-  const friendsLists = wishlists.filter(w => w.ownerId !== CURRENT_USER_ID && !w.isArchived);
+  const myLists = wishlists.filter(w => w.ownerId === user?.id && !w.isArchived);
+  const friendsLists = wishlists.filter(w => w.ownerId !== user?.id && !w.isArchived);
   const favoriteLists = wishlists.filter(w => w.isFavorite && !w.isArchived);
   const archivedLists = wishlists.filter(w => w.isArchived);
 
@@ -1899,6 +2308,24 @@ function JinnApp() {
     const nextLang = i18n.language === 'es' ? 'en' : 'es';
     i18n.changeLanguage(nextLang);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#1a0b2e] flex items-center justify-center">
+        <Loader2 className="text-jinn-violet animate-spin" size={48} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <LoginView 
+        onLogin={handleLogin} 
+        onShowPrivacy={() => setShowPrivacyModal(true)} 
+        onShowTerms={() => setShowTermsModal(true)} 
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#FDFDFF]">
@@ -1927,13 +2354,23 @@ function JinnApp() {
         )}
       </AnimatePresence>
 
+      {/* Create Wishlist Modal */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <CreateWishlistModal 
+            onClose={() => setShowCreateModal(false)}
+            onCreate={handleCreateWishlist}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Add Gift Modal */}
       <AnimatePresence>
         {showAddGiftModal && (
           <AddGiftModal 
             onClose={() => setShowAddGiftModal(false)}
             onAdd={handleAddGift}
-            isOwner={selectedWishlist?.ownerId === CURRENT_USER_ID}
+            isOwner={selectedWishlist?.ownerId === user?.id}
           />
         )}
       </AnimatePresence>
@@ -2097,7 +2534,7 @@ function JinnApp() {
                 type="text" 
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                placeholder="EJ: JINN-2026"
+                placeholder="EJ: DJINN-2026"
                 className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl py-4 px-6 text-center font-display text-2xl font-black tracking-widest focus:outline-none focus:border-jinn-violet transition-all mb-6"
               />
 
@@ -2243,20 +2680,16 @@ function JinnApp() {
       <nav className="sticky top-0 z-40 bg-white/70 backdrop-blur-xl border-b border-slate-100">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div 
-            className="flex items-center gap-3 cursor-pointer"
+            className="flex items-center cursor-pointer"
             onClick={handleBackToDashboard}
           >
-            <div className="w-10 h-10 bg-gradient-to-br from-jinn-violet to-jinn-coral rounded-xl flex items-center justify-center shadow-lg shadow-jinn-violet/20">
-              <Sparkles className="text-white" size={24} />
-            </div>
-            <span className="font-display text-2xl font-black tracking-tighter text-slate-900">{t('app_name')}</span>
+            <Logo className="text-slate-900" size={64} />
           </div>
           
           <div className="hidden md:flex items-center gap-8">
             <button onClick={handleBackToDashboard} className={`text-sm font-bold ${!selectedWishlistId ? 'text-jinn-violet' : 'text-slate-400 hover:text-jinn-violet'} transition-colors`}>
               {t('my_lists')}
             </button>
-            <a href="#" className="text-sm font-bold text-slate-400 hover:text-jinn-violet transition-colors">{t('explore')}</a>
             <button 
               onClick={() => setShowHelpModal(true)}
               className="text-sm font-bold text-slate-400 hover:text-jinn-violet transition-colors"
@@ -2266,10 +2699,6 @@ function JinnApp() {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-jinn-neon/20 rounded-full border border-jinn-neon/30">
-              <Sparkles size={14} className="text-jinn-dark" />
-              <span className="text-xs font-black text-jinn-dark">{points} {t('points')}</span>
-            </div>
             <button 
               onClick={() => setShowSettings(true)}
               className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200 transition-colors"
@@ -2293,7 +2722,13 @@ function JinnApp() {
       <main className="max-w-7xl mx-auto px-6 py-12">
         <Routes>
           <Route path="/login" element={
-            user ? <Navigate to="/" replace /> : <LoginView onLogin={handleLogin} />
+            user ? <Navigate to="/" replace /> : (
+              <LoginView 
+                onLogin={handleLogin} 
+                onShowPrivacy={() => setShowPrivacyModal(true)} 
+                onShowTerms={() => setShowTermsModal(true)} 
+              />
+            )
           } />
           
           <Route path="/" element={
@@ -2318,7 +2753,10 @@ function JinnApp() {
                       <Users size={20} />
                       Unirse con Código
                     </button>
-                    <button className="bubbly-button bg-jinn-violet text-white px-6 py-4 rounded-2xl font-bold flex items-center gap-2 shadow-xl shadow-jinn-violet/20">
+                    <button 
+                      onClick={() => setShowCreateModal(true)}
+                      className="bubbly-button bg-jinn-violet text-white px-6 py-4 rounded-2xl font-bold flex items-center gap-2 shadow-xl shadow-jinn-violet/20"
+                    >
                       <Plus size={20} />
                       Nueva Lista
                     </button>
@@ -2331,6 +2769,7 @@ function JinnApp() {
                     wishlists={myLists} 
                     onOpen={handleOpenWishlist}
                     onToggleFavorite={toggleFavorite}
+                    onAdd={() => setShowCreateModal(true)}
                   />
 
                   <WishlistSection 
@@ -2392,20 +2831,20 @@ function JinnApp() {
                       </div>
 
                       <div className="flex flex-wrap gap-3">
-                        {selectedWishlist.ownerId === CURRENT_USER_ID && (
+                        {selectedWishlist.ownerId === user?.id && (
                           <button 
-                            onClick={() => setNinjaMode(!ninjaMode)}
+                            onClick={toggleSecretMode}
                             className={`bubbly-button px-6 py-4 rounded-2xl font-bold flex items-center gap-2 border-2 transition-all ${
-                              ninjaMode 
+                              secretMode 
                               ? 'bg-jinn-dark text-white border-jinn-dark' 
                               : 'bg-white text-slate-400 border-slate-100'
                             }`}
                           >
-                            <Sparkles size={20} className={ninjaMode ? 'text-jinn-neon' : ''} />
-                            {t('ninja_mode')}: {ninjaMode ? t('ninja_on') : t('ninja_off')}
+                            <Sparkles size={20} className={secretMode ? 'text-jinn-neon' : ''} />
+                            {t('secret_mode')}: {secretMode ? t('secret_on') : t('secret_off')}
                           </button>
                         )}
-                        {selectedWishlist.ownerId === CURRENT_USER_ID && (
+                        {selectedWishlist.ownerId === user?.id && (
                           <button 
                             onClick={() => setShowPaymentSettingsModal(true)}
                             className="w-14 h-14 bubbly-button bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center text-slate-400 hover:text-jinn-violet hover:border-jinn-violet/20 transition-all"
@@ -2420,7 +2859,7 @@ function JinnApp() {
                         >
                           <Share2 size={24} />
                         </button>
-                        {selectedWishlist.ownerId === CURRENT_USER_ID && (
+                        {selectedWishlist.ownerId === user?.id && (
                           <button 
                             onClick={() => toggleArchive(selectedWishlist.id)}
                             className="w-14 h-14 bubbly-button bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center text-slate-400 hover:text-red-500 hover:border-red-100 transition-all"
@@ -2429,7 +2868,7 @@ function JinnApp() {
                             <ShoppingBag size={24} />
                           </button>
                         )}
-                        {selectedWishlist.ownerId === CURRENT_USER_ID && (
+                        {selectedWishlist.ownerId === user?.id && (
                           <button 
                             onClick={() => setShowAddGiftModal(true)}
                             className="bubbly-button bg-jinn-violet text-white px-8 py-4 rounded-2xl font-bold flex items-center gap-2 shadow-xl shadow-jinn-violet/20"
@@ -2438,7 +2877,7 @@ function JinnApp() {
                             {t('add_wish')}
                           </button>
                         )}
-                        {selectedWishlist.ownerId !== CURRENT_USER_ID && (
+                        {selectedWishlist.ownerId !== user?.id && (
                           <button 
                             onClick={() => setShowAddGiftModal(true)}
                             className="bubbly-button bg-jinn-dark text-white px-8 py-4 rounded-2xl font-bold flex items-center gap-2 shadow-xl shadow-jinn-dark/20"
@@ -2493,9 +2932,9 @@ function JinnApp() {
                               setContributingGift(gift);
                               setShowContributionModal(true);
                             }}
-                            ninjaMode={ninjaMode}
+                            secretMode={secretMode}
                             currency={currency}
-                            isOwner={selectedWishlist.ownerId === CURRENT_USER_ID}
+                            isOwner={selectedWishlist.ownerId === user?.id}
                           />
                         ))}
                     </AnimatePresence>
@@ -2537,9 +2976,9 @@ function JinnApp() {
           <GiftModal 
             gift={selectedGift} 
             onClose={() => setSelectedGift(null)} 
-            ninjaMode={ninjaMode}
+            secretMode={secretMode}
             currency={currency}
-            isOwner={selectedWishlist?.ownerId === CURRENT_USER_ID}
+            isOwner={selectedWishlist?.ownerId === user?.id}
             onMarkAsReceived={handleMarkAsReceived}
             wishlistId={selectedWishlistId || ''}
             onContribute={() => {
@@ -2553,14 +2992,11 @@ function JinnApp() {
       {/* Footer */}
       <footer className="bg-white border-t border-slate-100 py-12 mt-20">
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-8">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-jinn-dark rounded-lg flex items-center justify-center">
-              <Sparkles className="text-white" size={18} />
-            </div>
-            <span className="font-display text-xl font-black tracking-tighter text-slate-900">JINN</span>
+          <div className="flex items-center">
+            <Logo className="text-slate-400" size={48} />
           </div>
-          <p className="text-slate-400 text-sm font-medium">
-            © 2026 Jinn - Hecho con ✨ para tus mejores momentos.
+          <p className="text-slate-400 text-[11px] font-medium text-center md:text-left">
+            © 2026 Djinn - Hecho por Guten para compartir tus mejores momentos.
           </p>
           <div className="flex gap-6">
             <button onClick={() => setShowPrivacyModal(true)} className="text-slate-400 hover:text-jinn-violet transition-colors font-bold text-sm">Privacidad</button>
